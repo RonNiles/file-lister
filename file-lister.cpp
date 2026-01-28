@@ -80,6 +80,127 @@ class DirLevel {
   }
 
   /**
+   * CreateFromTraverseFile - Factory function to create DirLevel from Traverse() output
+   *
+   * @param filename: Path to file containing output from Traverse()
+   * @return: Initialized DirLevel reconstructed from the file
+   *
+   * Parses a file containing lines in the format:
+   *   path type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn
+   * and reconstructs the directory tree structure.
+   * Throws std::runtime_error on parse errors or file access failures.
+   */
+  static DirLevel CreateFromTraverseFile(const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+      throw std::runtime_error("Cannot open " + std::string(filename) + ": " +
+                               strerror(errno));
+    }
+
+    DirLevel root(nullptr, nullptr);
+    char line[4096];
+    int line_num = 0;
+
+    while (fgets(line, sizeof(line), file)) {
+      line_num++;
+
+      // Parse the line: path type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn
+      int type;
+      unsigned long size;
+      int year, month, day, hour, min, sec;
+      long nsec;
+
+      // The path may contain spaces so search backwards from EOL for the final 4 fields
+      size_t ofs = strlen(line);
+      int remain = 4;
+      while (ofs-- > 0) {
+        if (line[ofs] == ' ' && --remain == 0) {
+          break;
+        }
+      }
+      if (ofs == 0) {
+        fclose(file);
+        throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
+                                 ": reading final four fields");
+      }
+
+      // Null terminate the filename and scan the final fields
+      line[ofs++] = '\0';
+      int matched = sscanf(line + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
+                           &year, &month, &day, &hour, &min, &sec, &nsec);
+      if (matched != 9) {
+        fclose(file);
+        throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
+                                 ": expected 9 fields, got " + std::to_string(matched));
+      }
+
+      // Split path into directory components and filename
+      std::string fullpath(line);
+      size_t last_slash = fullpath.rfind('/');
+
+      std::string dirname =
+          (last_slash != std::string::npos) ? fullpath.substr(0, last_slash + 1) : "";
+      std::string file_name =
+          (last_slash != std::string::npos) ? fullpath.substr(last_slash + 1) : fullpath;
+
+      // Navigate to the appropriate directory level, creating as needed
+      DirLevel *current_dir = &root;
+      if (!dirname.empty()) {
+        size_t start = 0;
+        while (start < dirname.length()) {
+          size_t end = dirname.find('/', start);
+          if (end == std::string::npos) break;
+
+          std::string component = dirname.substr(start, end - start);
+          if (!component.empty()) {
+            // Find or create this directory
+            auto it = current_dir->entries_.find(component);
+            if (it == current_dir->entries_.end()) {
+              // Create directory entry
+              auto inserted = current_dir->entries_.emplace(component, EntryInfo{}).first;
+              EntryInfo &info = inserted->second;
+              info.type = DT_DIR;
+              info.size = 0;
+              info.name = &inserted->first;
+              info.dir.reset(new DirLevel(current_dir, &info));
+              current_dir = info.dir.get();
+            } else {
+              current_dir = it->second.dir.get();
+            }
+          }
+          start = end + 1;
+        }
+      }
+
+      // Add the file/directory entry at the current level
+      auto inserted = current_dir->entries_.emplace(file_name, EntryInfo{}).first;
+      EntryInfo &info = inserted->second;
+      info.type = type;
+      info.size = size;
+      info.name = &inserted->first;
+
+      // Convert timestamp to timespec
+      struct tm tm_time = {};
+      tm_time.tm_year = year - 1900;
+      tm_time.tm_mon = month - 1;
+      tm_time.tm_mday = day;
+      tm_time.tm_hour = hour;
+      tm_time.tm_min = min;
+      tm_time.tm_sec = sec;
+      info.mtime.tv_sec = timegm(&tm_time);
+      info.mtime.tv_nsec = nsec;
+
+      // If it's a directory, create the nested DirLevel
+      if (type == DT_DIR) {
+        info.dir.reset(new DirLevel(current_dir, &info));
+      }
+    }
+
+    fclose(file);
+    return root;
+  }
+
+  /**
    * ReadDir - Recursively read directory contents from an open file descriptor
    *
    * @param fddir: Open file descriptor for the directory (ownership transferred)
@@ -138,7 +259,6 @@ class DirLevel {
         info->dir->ReadDir(nextfd);  // Recursive call
       }
     }
-
     // Directory automatically closed when unique_ptr goes out of scope
   }
 
@@ -222,8 +342,8 @@ class DirLevel {
   // Member variables
   std::map<std::string, EntryInfo>
       entries_;            // Map of entries (automatically sorted by name)
-  DirLevel *const prev_;   // Pointer to parent directory (nullptr for root)
-  EntryInfo *const info_;  // Pointer to this dir's entry in parent (nullptr for root)
+  const DirLevel *prev_;   // Pointer to parent directory (nullptr for root)
+  const EntryInfo *info_;  // Pointer to this dir's entry in parent (nullptr for root)
 };
 
 /**
@@ -238,17 +358,17 @@ int main(int argc, char *argv[]) {
   // Determine starting directory: argument or current directory
   const char *start_path = (argc > 1) ? argv[1] : ".";
 
+  DirLevel root(nullptr, nullptr);
   try {
     // Create and initialize directory tree from starting path
-    DirLevel root = DirLevel::CreateFromPath(start_path);
-
-    // Traverse and print the complete directory tree
-    std::string basedir;
-    DirLevel::Traverse(&root, basedir);
+    root = DirLevel::CreateFromPath(start_path);
   } catch (const std::exception &e) {
     fprintf(stderr, "Error: %s\n", e.what());
     return 1;
   }
+  // Traverse and print the complete directory tree
+  std::string basedir;
+  DirLevel::Traverse(&root, basedir);
 
   return 0;
 }
