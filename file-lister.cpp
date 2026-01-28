@@ -51,6 +51,35 @@ class DirLevel {
   DirLevel(DirLevel *const prev, EntryInfo *const info) : prev_(prev), info_(info) {}
 
   /**
+   * CreateFromPath - Factory function to create and initialize a root DirLevel
+   *
+   * @param start_path: Path to the directory to read
+   * @return: Initialized DirLevel containing the entire directory tree
+   *
+   * Opens the directory, creates a root DirLevel, and recursively reads all contents.
+   * Throws std::runtime_error on any failure.
+   */
+  static DirLevel CreateFromPath(const char *start_path) {
+    // Verify directory is readable
+    if (access(start_path, R_OK) < 0) {
+      throw std::runtime_error("Cannot access " + std::string(start_path) + ": " +
+                               strerror(errno));
+    }
+
+    // Open the starting directory
+    int fddir = open(start_path, O_RDONLY | O_DIRECTORY);
+    if (fddir < 0) {
+      throw std::runtime_error("Cannot open " + std::string(start_path) + ": " +
+                               strerror(errno));
+    }
+
+    // Create root directory level and read entire tree
+    DirLevel root(nullptr, nullptr);  // Root has no parent or info
+    root.ReadDir(fddir);              // Recursively read all subdirectories
+    return root;
+  }
+
+  /**
    * ReadDir - Recursively read directory contents from an open file descriptor
    *
    * @param fddir: Open file descriptor for the directory (ownership transferred)
@@ -209,24 +238,9 @@ int main(int argc, char *argv[]) {
   // Determine starting directory: argument or current directory
   const char *start_path = (argc > 1) ? argv[1] : ".";
 
-  // Verify directory is readable
-  if (access(start_path, R_OK) < 0) {
-    fprintf(stderr, "Cannot access %s: errno %d: %s\n", start_path, errno,
-            strerror(errno));
-    return 1;
-  }
-
-  // Open the starting directory
-  int fddir = open(start_path, O_RDONLY | O_DIRECTORY);
-  if (fddir < 0) {
-    fprintf(stderr, "Cannot open %s: errno %d: %s\n", start_path, errno, strerror(errno));
-    return 1;
-  }
-
   try {
-    // Create root directory level and read entire tree
-    DirLevel root(nullptr, nullptr);  // Root has no parent or info
-    root.ReadDir(fddir);              // Recursively read all subdirectories
+    // Create and initialize directory tree from starting path
+    DirLevel root = DirLevel::CreateFromPath(start_path);
 
     // Traverse and print the complete directory tree
     std::string basedir;
