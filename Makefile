@@ -9,12 +9,17 @@ endif
 
 .PHONY: all clean format
 
-all: file-lister
+all: file-lister file-comparer
 
-file-lister: file-lister.cpp
-	g++ $(CFLAGS) $< -o $@
+file-lister: file-lister.cpp dir_level.cpp dir_level.h
+	g++ $(CFLAGS) $^ -o $@
+
+file-comparer: file-comparer.cpp dir_level.cpp dir_level.h
+	g++ $(CFLAGS) $^ -o $@
+
 clean:
-	rm -f file-lister
+	rm -f file-lister file-comparer
 
 format:
-	clang-format -i -style="{BasedOnStyle: Google, ColumnLimit: 90}" file-lister.cpp
+	clang-format -i -style="{BasedOnStyle: Google, ColumnLimit: 90}" file-lister.cpp file-comparer.cpp
+	clang-format -i -style="{BasedOnStyle: Google, ColumnLimit: 90}" dir_level.cpp dir_level.h
