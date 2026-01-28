@@ -107,7 +107,7 @@ class DirLevel {
       // Parse the line: path type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn
       int type;
       unsigned long size;
-      int year, month, day, hour, min, sec;
+      struct tm tm_time = {};
       long nsec;
 
       // The path may contain spaces so search backwards from EOL for the final 4 fields
@@ -127,12 +127,15 @@ class DirLevel {
       // Null terminate the filename and scan the final fields
       line[ofs++] = '\0';
       int matched = sscanf(line + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
-                           &year, &month, &day, &hour, &min, &sec, &nsec);
+                           &tm_time.tm_year, &tm_time.tm_mon, &tm_time.tm_mday,
+                           &tm_time.tm_hour, &tm_time.tm_min, &tm_time.tm_sec, &nsec);
       if (matched != 9) {
         fclose(file);
         throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
                                  ": expected 9 fields, got " + std::to_string(matched));
       }
+      tm_time.tm_year -= 1900;
+      tm_time.tm_mon -= 1;
 
       // Split path into directory components and filename
       std::string fullpath(line);
@@ -153,17 +156,14 @@ class DirLevel {
 
           std::string component = dirname.substr(start, end - start);
           if (!component.empty()) {
-            // Find or create this directory
+            // Find  this directory
             auto it = current_dir->entries_.find(component);
             if (it == current_dir->entries_.end()) {
-              // Create directory entry
-              auto inserted = current_dir->entries_.emplace(component, EntryInfo{}).first;
-              EntryInfo &info = inserted->second;
-              info.type = DT_DIR;
-              info.size = 0;
-              info.name = &inserted->first;
-              info.dir.reset(new DirLevel(current_dir, &info));
-              current_dir = info.dir.get();
+              std::string path;
+              current_dir->FullPath(path);
+              throw std::runtime_error("Directory " + path + component +
+                                       " not found when processing line " +
+                                       std::to_string(line_num));
             } else {
               current_dir = it->second.dir.get();
             }
@@ -180,13 +180,6 @@ class DirLevel {
       info.name = &inserted->first;
 
       // Convert timestamp to timespec
-      struct tm tm_time = {};
-      tm_time.tm_year = year - 1900;
-      tm_time.tm_mon = month - 1;
-      tm_time.tm_mday = day;
-      tm_time.tm_hour = hour;
-      tm_time.tm_min = min;
-      tm_time.tm_sec = sec;
       info.mtime.tv_sec = timegm(&tm_time);
       info.mtime.tv_nsec = nsec;
 
