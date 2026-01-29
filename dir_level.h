@@ -129,7 +129,7 @@ class DirLevel {
   EntryInfo *AddEntry(struct dirent *entry, struct stat *file_stat);
 
   // Member variables
-  std::map<std::string, EntryInfo>
+  std::map<std::string, EntryInfo, std::less<void>>
       entries_;            // Map of entries (automatically sorted by name)
   const DirLevel *prev_;   // Pointer to parent directory (nullptr for root)
   const EntryInfo *info_;  // Pointer to this dir's entry in parent (nullptr for root)

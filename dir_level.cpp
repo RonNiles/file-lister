@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 // Implementation of DirLevel::CreateFromPath
@@ -48,10 +49,11 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
   }
 
   DirLevel root(nullptr, nullptr);
-  char line[4096];
+  char *line = nullptr;
+  size_t line_capacity = 0;
   int line_num = 0;
 
-  while (fgets(line, sizeof(line), file)) {
+  while (getline(&line, &line_capacity, file) != -1) {
     line_num++;
 
     // Parse the line: path type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn
@@ -69,6 +71,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
       }
     }
     if (remain != 0) {
+      free(line);
       fclose(file);
       throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
                                ": reading final four fields");
@@ -80,6 +83,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
                          &tm_time.tm_year, &tm_time.tm_mon, &tm_time.tm_mday,
                          &tm_time.tm_hour, &tm_time.tm_min, &tm_time.tm_sec, &nsec);
     if (matched != 9) {
+      free(line);
       fclose(file);
       throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
                                ": expected 9 fields, got " + std::to_string(matched));
@@ -88,13 +92,14 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     tm_time.tm_mon -= 1;
 
     // Split path into directory components and filename
-    std::string fullpath(line);
+    std::string_view fullpath(line);
     size_t last_slash = fullpath.rfind('/');
 
-    std::string dirname =
-        (last_slash != std::string::npos) ? fullpath.substr(0, last_slash + 1) : "";
-    std::string file_name =
-        (last_slash != std::string::npos) ? fullpath.substr(last_slash + 1) : fullpath;
+    std::string_view dirname =
+        (last_slash != std::string_view::npos) ? fullpath.substr(0, last_slash + 1) : "";
+    std::string_view file_name = (last_slash != std::string_view::npos)
+                                     ? fullpath.substr(last_slash + 1)
+                                     : fullpath;
 
     // Navigate to the appropriate directory level. No need to create directories here;
     // they must already exist in the tree since directories are listed before their
@@ -104,9 +109,9 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
       size_t start = 0;
       while (start < dirname.length()) {
         size_t end = dirname.find('/', start);
-        if (end == std::string::npos) break;
+        if (end == std::string_view::npos) break;
 
-        std::string component = dirname.substr(start, end - start);
+        std::string_view component = dirname.substr(start, end - start);
         if (!component.empty()) {
           // Find  this directory
           auto it = current_dir->entries_.find(component);
@@ -114,7 +119,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
               !it->second.dir) {
             std::string path;
             current_dir->FullPath(path);
-            throw std::runtime_error("Directory " + path + component +
+            throw std::runtime_error("Directory " + path + std::string(component) +
                                      " not found when processing line " +
                                      std::to_string(line_num));
           } else {
@@ -142,6 +147,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     }
   }
 
+  free(line);
   fclose(file);
   return root;
 }
