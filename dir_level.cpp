@@ -271,28 +271,28 @@ void DirLevel::RemoveCommon(DirLevel *dir1, DirLevel *dir2) {
     auto it2 = dir2->entries_.find(name);
     if (it2 != dir2->entries_.end()) {
       const EntryInfo &info2 = it2->second;
+      // If both are directories (with same name) then recurse always
+      if (info1.type == DT_DIR && info2.type == DT_DIR) {
+        if (!info1.dir.get() || !info2.dir.get()) {
+          std::string fullpath;
+          dir1->FullPath(fullpath);
+          throw std::runtime_error("missing directory pointer for " + fullpath + name);
+        }
+        RemoveCommon(info1.dir.get(), info2.dir.get());
+        // Remove directory entries only if they are now empty
+        if (info1.dir.get()->entries_.empty()) {
+          dir1->entries_.erase(it);
+        }
+        if (info2.dir.get()->entries_.empty()) {
+          dir2->entries_.erase(it2);
+        }
+        continue;
+      }
 
       // Check if the entries are identical (same type, size, and modification time)
       if (info2.type == info1.type && info2.size == info1.size &&
           info2.mtime.tv_sec == info1.mtime.tv_sec &&
           info2.mtime.tv_nsec == info1.mtime.tv_nsec) {
-        // Handle directories recursively
-        if (info1.type == DT_DIR) {
-          if (!info1.dir.get() || !info2.dir.get()) {
-            std::string fullpath;
-            dir1->FullPath(fullpath);
-            throw std::runtime_error("missing directory pointer for " + fullpath + name);
-          }
-          RemoveCommon(info1.dir.get(), info2.dir.get());
-          // Remove directory entries only if they are now empty
-          if (info1.dir.get()->entries_.empty()) {
-            dir1->entries_.erase(it);
-          }
-          if (info2.dir.get()->entries_.empty()) {
-            dir2->entries_.erase(it2);
-          }
-          continue;
-        }
         dir1->entries_.erase(it);
         dir2->entries_.erase(it2);
       }
