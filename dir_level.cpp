@@ -34,9 +34,9 @@ DirLevel DirLevel::CreateFromPath(const char *start_path) {
                              strerror(errno));
   }
 
-  // Create root directory level and read entire tree
-  DirLevel root(nullptr, nullptr);  // Root has no parent or info
-  root.ReadDir(fddir);              // Recursively read all subdirectories
+  // Create root directory level and read entire tree rooted at fddir
+  DirLevel root;
+  root.ReadDir(fddir);
   return root;
 }
 
@@ -48,42 +48,75 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
                              strerror(errno));
   }
 
-  DirLevel root(nullptr, nullptr);
-  char *line = nullptr;
-  size_t line_capacity = 0;
+  DirLevel root;
+  
+  // Use unique_ptr with custom deleter for buffers allocated by getdelim
+  auto free_deleter = [](void* ptr) { free(ptr); };
+  std::unique_ptr<char, decltype(free_deleter)> metadata(nullptr, free_deleter);
+  size_t metadata_capacity = 0;
+  std::unique_ptr<char, decltype(free_deleter)> fname(nullptr, free_deleter);
+  size_t fname_capacity = 0;
   int line_num = 0;
 
-  while (getline(&line, &line_capacity, file) != -1) {
+  // Get the line in two parts. First is the filename delimited by '\0', then the metadata
+  // delimited by '\n', This allows us to support filenames with embedded linefeeds by
+  // first using zero as delimiter before using '\n' as delimiter
+
+  for (;;) {
+    char* fname_raw = fname.release();
+    ssize_t fname_len = getdelim(&fname_raw, &fname_capacity, '\0', file);
+    fname.reset(fname_raw);
+    if (fname_len <= 0) {
+      break;
+    }
+    if (fname.get()[fname_len - 1] != '\0') {
+      fclose(file);
+      throw std::runtime_error("Missing null in '" + std::string(filename) +
+                               "' at line " + std::to_string(line_num) + " :" +
+                               strerror(errno));
+    }
+    char* metadata_raw = metadata.release();
+    ssize_t metadata_len = getdelim(&metadata_raw, &metadata_capacity, '\n', file);
+    metadata.reset(metadata_raw);
+    if (metadata_len <= 0) {
+      fclose(file);
+      throw std::runtime_error("Cannot read linefeed from '" + std::string(filename) +
+                               "' at line " + std::to_string(line_num) + " :" +
+                               strerror(errno));
+    }
+    if (metadata.get()[metadata_len - 1] != '\n') {
+      fclose(file);
+      throw std::runtime_error("Missing linefeed in '" + std::string(filename) +
+                               "' at line " + std::to_string(line_num) + " :" +
+                               strerror(errno));
+    }
     line_num++;
 
-    // Parse the line: path type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn
+    // Parse the line: ' type size YYYY-MM-DD HH:MM:SS.nnnnnnnnn'
     int type;
     unsigned long size;
     struct tm tm_time = {};
     long nsec;
 
     // The path may contain spaces so search backwards from EOL for the final 4 fields
-    size_t ofs = strlen(line);
+    size_t ofs = size_t(metadata_len);
     int remain = 4;
     while (ofs > 0) {
-      if (line[--ofs] == ' ' && --remain == 0) {
+      if (metadata.get()[--ofs] == ' ' && --remain == 0) {
         break;
       }
     }
     if (remain != 0) {
-      free(line);
       fclose(file);
       throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
                                ": reading final four fields");
     }
 
-    // Null terminate the filename and scan the final fields
-    line[ofs++] = '\0';
-    int matched = sscanf(line + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
+    // scan the four fields
+    int matched = sscanf(metadata.get() + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
                          &tm_time.tm_year, &tm_time.tm_mon, &tm_time.tm_mday,
                          &tm_time.tm_hour, &tm_time.tm_min, &tm_time.tm_sec, &nsec);
     if (matched != 9) {
-      free(line);
       fclose(file);
       throw std::runtime_error("Parse error at line " + std::to_string(line_num) +
                                ": expected 9 fields, got " + std::to_string(matched));
@@ -92,7 +125,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     tm_time.tm_mon -= 1;
 
     // Split path into directory components and filename
-    std::string_view fullpath(line);
+    std::string_view fullpath(fname.get(), size_t(fname_len - 1));
     size_t last_slash = fullpath.rfind('/');
 
     std::string_view dirname =
@@ -147,7 +180,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     }
   }
 
-  free(line);
+  // unique_ptrs will automatically free the buffers when they go out of scope
   fclose(file);
   return root;
 }
@@ -218,9 +251,11 @@ void DirLevel::Traverse(const DirLevel *dir_level, std::string &path) {
       throw std::runtime_error("gmtime failed for " + fullpath + name);
     }
 
-    // Print: full_path type size timestamp_with_nanoseconds
-    printf("%s%s %d %lu %04u-%02u-%02u %02u:%02u:%02u.%09lu\n", path.c_str(),
-           name.c_str(), info.type, info.size, 1900 + tt->tm_year, tt->tm_mon + 1,
+    // Print: full_path type size timestamp_with_nanoseconds. After the full path, we
+    // output a null byte before the metadata. This allows us to support filenames with
+    // embedded linefeeds by first using zero as delimiter before using '\n' as delimiter
+    printf("%s%s%c %d %lu %04u-%02u-%02u %02u:%02u:%02u.%09lu\n", path.c_str(),
+           name.c_str(), 0, info.type, info.size, 1900 + tt->tm_year, tt->tm_mon + 1,
            tt->tm_mday, tt->tm_hour, tt->tm_min, tt->tm_sec, info.mtime.tv_nsec);
 
     // If this is a directory, recursively traverse it
