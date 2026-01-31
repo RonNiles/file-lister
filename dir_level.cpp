@@ -47,44 +47,43 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     throw std::runtime_error("Cannot open " + std::string(filename) + ": " +
                              strerror(errno));
   }
+  // Use unique_ptr with custom deleter to ensure FILE is closed
+  std::unique_ptr<FILE, int (*)(FILE *)> file_raii(file, fclose);
 
   DirLevel root;
-  
-  // Use unique_ptr with custom deleter for buffers allocated by getdelim
-  auto free_deleter = [](void* ptr) { free(ptr); };
-  std::unique_ptr<char, decltype(free_deleter)> metadata(nullptr, free_deleter);
-  size_t metadata_capacity = 0;
-  std::unique_ptr<char, decltype(free_deleter)> fname(nullptr, free_deleter);
+
+  // buffers to be allocated by getdelim
+  char *fname = nullptr;
   size_t fname_capacity = 0;
-  int line_num = 0;
+  char *metadata = nullptr;
+  size_t metadata_capacity = 0;
+
+  // Use unique_ptr with custom deleter for buffers allocated by getdelim
+  auto free_deleter = [](char **ptr) { free(*ptr); };
+  std::unique_ptr<char *, decltype(free_deleter)> metadata_raii(&metadata, free_deleter);
+  std::unique_ptr<char *, decltype(free_deleter)> fname_raii(&fname, free_deleter);
 
   // Get the line in two parts. First is the filename delimited by '\0', then the metadata
   // delimited by '\n', This allows us to support filenames with embedded linefeeds by
   // first using zero as delimiter before using '\n' as delimiter
-
+  int line_num = 0;
   for (;;) {
-    char* fname_raw = fname.release();
-    ssize_t fname_len = getdelim(&fname_raw, &fname_capacity, '\0', file);
-    fname.reset(fname_raw);
+    ssize_t fname_len = getdelim(&fname, &fname_capacity, '\0', file);
     if (fname_len <= 0) {
       break;
     }
-    if (fname.get()[fname_len - 1] != '\0') {
-      fclose(file);
+    if (fname[fname_len - 1] != '\0') {
       throw std::runtime_error("Missing null in '" + std::string(filename) +
                                "' at line " + std::to_string(line_num) + " :" +
                                strerror(errno));
     }
-    char* metadata_raw = metadata.release();
-    ssize_t metadata_len = getdelim(&metadata_raw, &metadata_capacity, '\n', file);
-    metadata.reset(metadata_raw);
+    ssize_t metadata_len = getdelim(&metadata, &metadata_capacity, '\n', file);
     if (metadata_len <= 0) {
-      fclose(file);
       throw std::runtime_error("Cannot read linefeed from '" + std::string(filename) +
                                "' at line " + std::to_string(line_num) + " :" +
                                strerror(errno));
     }
-    if (metadata.get()[metadata_len - 1] != '\n') {
+    if (metadata[metadata_len - 1] != '\n') {
       fclose(file);
       throw std::runtime_error("Missing linefeed in '" + std::string(filename) +
                                "' at line " + std::to_string(line_num) + " :" +
@@ -102,7 +101,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     size_t ofs = size_t(metadata_len);
     int remain = 4;
     while (ofs > 0) {
-      if (metadata.get()[--ofs] == ' ' && --remain == 0) {
+      if (metadata[--ofs] == ' ' && --remain == 0) {
         break;
       }
     }
@@ -113,7 +112,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     }
 
     // scan the four fields
-    int matched = sscanf(metadata.get() + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
+    int matched = sscanf(metadata + ofs, "%d %lu %d-%d-%d %d:%d:%d.%ld", &type, &size,
                          &tm_time.tm_year, &tm_time.tm_mon, &tm_time.tm_mday,
                          &tm_time.tm_hour, &tm_time.tm_min, &tm_time.tm_sec, &nsec);
     if (matched != 9) {
@@ -125,7 +124,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     tm_time.tm_mon -= 1;
 
     // Split path into directory components and filename
-    std::string_view fullpath(fname.get(), size_t(fname_len - 1));
+    std::string_view fullpath(fname, size_t(fname_len - 1));
     size_t last_slash = fullpath.rfind('/');
 
     std::string_view dirname =
@@ -180,8 +179,7 @@ DirLevel DirLevel::CreateFromTraverseFile(const char *filename) {
     }
   }
 
-  // unique_ptrs will automatically free the buffers when they go out of scope
-  fclose(file);
+  // unique_ptrs will automatically free the buffers and FILE when they go out of scope
   return root;
 }
 
